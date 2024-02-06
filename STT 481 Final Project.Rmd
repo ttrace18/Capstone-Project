@@ -1,0 +1,477 @@
+---
+title: "STT 481 Final Project"
+author: "Tommy Tracey"
+date: "2022-12-09"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+# Introduction
+
+The findings and information provided in this project are based on the Kaggle data set "House Prices - Advanced Regression Techniques", which is a challenge based on predicting the sale prices of houses in Ames, Iowa based on 79 predictors. The results obtained will be based on the 9 different model types covered throughout the duration of the course this semester, and the best/worst performing models will be recognized through cross-validation estimates of test errors and the true errors via the Kaggle submissions.
+
+# Raw Data
+
+The raw data, divided into training and test data, contains 79 total predictors that all relate to the response variable, "SalePrice". The training data has 1460 rows and 81 columns, and the test data has 1459 rows and 80 columns. Each row represents the different observed houses, and each column represents the different predictors (excluding the ID and SalePrice columns). 
+
+# Cleaning the Data
+
+I used train_new.csv and test_new.csv, which was provided.
+
+# Models
+
+First, the cleaned training and test data is inputted into house_prices_training and house_prices_test.
+```{r}
+house_prices_training <- read.csv("C:\\Users\\tlt39\\Downloads\\train_new.csv")
+house_prices_test <- read.csv("C:\\Users\\tlt39\\Downloads\\test_new.csv")
+```
+
+### KNN
+
+There are a few different options that were taught for KNN cross validation, such as Leave-One-Out-Cross-Validation and k-fold Cross-Validation. We will go with a 10-fold cross-validation to compute the lowest mean squared error, as it is a faster method than LOOCV.
+```{r}
+houses_all <- rbind(house_prices_training[,-24], house_prices_test[,-24])
+X_all <- model.matrix( ~ ., data = houses_all)[,-1]
+X_all <- scale(X_all)
+X_train <- X_all[1:nrow(house_prices_training),]
+
+library(FNN)
+set.seed(10) 
+fold.index <- cut(sample(1:nrow(X_train)), breaks=10, labels=FALSE)
+K.vt <- seq(10,100,5)
+error.k <- rep(0, length(K.vt))
+counter <- 0
+for(k in K.vt){
+  counter <- counter + 1 
+  mse <- rep(0,10) 
+  for(i in 1:10){
+    pred.out <- knn.reg(X_train[fold.index!=i,], X_train[fold.index==i,],
+                        house_prices_training$SalePrice[fold.index!=i], k=k)
+    mse[i] <- mean((pred.out$pred - house_prices_training$SalePrice[fold.index==i])^2)
+}
+  error.k[counter] <- sum(mse)/10
+}
+plot(seq(10,100,5), error.k, type="b", xlab="K", ylab="10-fold CV")
+```
+
+From the code and plot above, it can be observed that K = 10 gives the best results with the lowest MSE. The CV MSE gets progressively worse as the K value increases incrementally by 5 until it reaches 100.
+
+### Linear Regression
+
+We will start out by fitting the response to all of the predictors and then make further modifications based on the findings of the residual diagnostic plots.
+```{r}
+lm_houses <- glm(SalePrice ~ ., data = house_prices_training)
+summary(lm_houses)
+```
+```{r}
+par(mfrow=c(2,2))
+plot(lm_houses)
+```
+
+First checking for normality, the Normal Q-Q plot above shows that many of the points do not fall on the line, thus it is very far off from the normal distribution that is ideal. A remedy to fix this would be to transform the response variable (SalePrice) by taking the log. Next checking the Residuals vs Fitted plot, there doesn't seem to be any issues with constant variance assumption. Now for large leverage points/outliers, the above Residuals vs Leverage plot shows that observations 1299 and 524 have a Cook's distance larger than 1, so they are large leverage points. From the Scale-Location plot above, it can also be determined that the same two observations, 1299 and 524, both have standardized residuals greater than 3, so they are outliers. The Residuals vs Fitted plot shows some relationship between the predictors and response.
+
+```{r}
+lm_houses_log <- glm(log(SalePrice) ~ ., data = house_prices_training)
+summary(lm_houses_log)
+par(mfrow=c(2,2))
+plot(lm_houses_log)
+```
+
+There seems to be some improvement with normality after this transformation and the AIC score is significantly lower, although it is still not excellent. It can also be seen that observation 1299 and 524 are still both large leverage points and outliers. We can now remove these observations and revisit the residual diagnostics again afterwards.
+
+```{r}
+lm_houses_log_2 <- glm(log(SalePrice) ~ ., data = house_prices_training[-c(524,1299),])
+summary(lm_houses_log_2)
+par(mfrow=c(2,2))
+plot(lm_houses_log_2)
+```
+
+There are no longer any large leverage points or outliers after removing these observations. However, the structure between the predictors and response now seemingly has no relationship. There is also always the uncertainty with removing data points without checking with data collector. Due to this, I will use the log model with all data points still included.
+
+### Subset Selection
+
+We will start out by loading the leaps library and creating a code chunk with the predict method for regsubsets() that was provided in class.
+
+```{r}
+library(leaps)
+
+predict.regsubsets <- function (object, newdata , id, ...){
+  form <- as.formula(object$call[[2]]) #formula of null model
+  mat <- model.matrix(form, newdata) # building an "X" matrix from newdata
+  coefi <- coef(object, id = id) # coefficient estimates associated with the object model contain
+  xvars <- names(coefi) # names of the non-zero coefficient estimates
+  return(mat[,xvars] %*% coefi) # X[,non-zero variables] %*% Coefficients[non-zero variables]
+}
+```
+
+The three subset selection options are best, forward stepwise and backward stepwise. I chose to use the best subset selection method here because it is computationally the easiest and simplest method. Now, we can perform 10-fold cross-validation on the training data to determine the model with the least test error.
+
+```{r}
+fold.index <- cut(sample(1:nrow(house_prices_training)), breaks=10, labels=FALSE)
+cv.error.best.fit <- rep(0,23)
+for(i in 1:23){
+  cat("i=", i,"\n")
+  error <- rep(0, 10)
+  for (k in 1:10){
+    house.train <- house_prices_training[fold.index != k,]
+    house.test <- house_prices_training[fold.index == k,]
+    true.y <- house.test[,"SalePrice"]
+    best.fit <- regsubsets(SalePrice ~ ., data = house.train, nvmax = 23)
+    pred <- predict(best.fit, house.test, id = i)
+    error[k] <- mean((pred - true.y)^2)
+}
+print(mean(error))
+cv.error.best.fit[i] <- mean(error)
+}
+```
+```{r}
+par(mfrow=c(1,1))
+plot(cv.error.best.fit, type = "b")
+points(which.min(cv.error.best.fit), cv.error.best.fit[which.min(cv.error.best.fit)],
+       col = "blue", cex = 2, pch = 23)
+```
+
+The above code and plots tell us that cross-validation selects an 11-variable model, and we can now fit the model and view the coefficient values for each of the chosen predictors.
+
+```{r}
+reg_best <- regsubsets(SalePrice ~ ., data = house_prices_training, nvmax = 23)
+coef(reg_best, which.min(cv.error.best.fit))
+```
+
+### Shrinkage Methods
+
+As there are two shrinkage methods to be used, ridge regression and lasso, we will work through both of them below in separate sections.
+
+#### Ridge Regression
+
+To start with ridge regression, we will first create a matrix corresponding to the 23 predictors in our training data, as it will be needed in the glmnet model fitting code.
+
+```{r}
+library(glmnet)
+X <- model.matrix(SalePrice ~ ., house_prices_training)
+y <- house_prices_training$SalePrice
+```
+
+We can now fit a ridge regression below by specifying alpha=0, and then using 10-fold cross-validation on a sequence of different lambda values in order to determine the best lambda value.
+
+```{r}
+ridge_mod <- glmnet(X, y, alpha = 0)
+grid <- 10^seq(10, -2, length = 100)
+ridge_mod <- glmnet(X, y, alpha = 0, lambda = grid)
+cv_out <- cv.glmnet(X, y, alpha = 0, nfolds = 10)
+plot(cv_out)
+```
+
+```{r}
+best_lam <- cv_out$lambda.min
+best_lam
+```
+
+The above information gives the plot of the cross-validation, and then the best choice for lambda which corresponds to the lowest value in the graph. We can now view the coefficient values on the model when the optimal lambda choice is included.
+
+```{r}
+coef(ridge_mod, s = best_lam)
+```
+
+#### Lasso
+
+The lasso model will take on very similar form, with a slight modification being changing the value of alpha to 1 to specify lasso. Now, we can repeat the process of cross-validation to select the best lambda value.
+
+```{r}
+lasso_mod <- glmnet(X, y, alpha = 1, lambda = grid)
+cv_out_2 <- cv.glmnet(X, y, alpha = 1)
+plot(cv_out_2)
+```
+
+```{r}
+best_lam <- cv_out_2$lambda.min
+coef(lasso_mod, s = best_lam)
+```
+
+### GAMs
+
+As found earlier during the best subset selection through 10-fold cross-validation, it was determined that an 11-predictor model would have the least test error. We will revisit the predictor names and fit a generalized additive model using these predictors with the default 4 degrees of freedom for each s() function, then use 3 and 5 degrees of freedom on the model, and determine which df value gives the lowest test error.
+
+```{r}
+coef(reg_best, 11)
+```
+
+```{r}
+library(gam)
+gam_houses <- gam(SalePrice ~ s(LotArea) + s(OverallQual) + s(OverallCond) + s(YearBuilt) + s(BsmtFinSF1) + s(X1stFlrSF) + s(X2ndFlrSF) + s(BedroomAbvGr) + s(KitchenAbvGr) + s(TotRmsAbvGrd) + s(GarageCars), data = house_prices_training)
+par(mfrow = c(4,4))
+par(mar = c(1,1,1,1))
+plot(gam_houses, se = TRUE, col = "blue")
+gam_houses2 <- gam(SalePrice ~ s(LotArea, df = 3) + s(OverallQual, df = 3) + s(OverallCond, df = 3) + s(YearBuilt, df = 3) + s(BsmtFinSF1, df = 3) + s(X1stFlrSF, df = 3) + s(X2ndFlrSF, df = 3) + s(BedroomAbvGr, df = 3) + s(KitchenAbvGr, df = 3) + s(TotRmsAbvGrd, df = 3) + s(GarageCars, df = 3), data = house_prices_training)
+gam_houses3 <- gam(SalePrice ~ s(LotArea, df = 5) + s(OverallQual, df = 5) + s(OverallCond, df = 5) + s(YearBuilt, df = 5) + s(BsmtFinSF1, df = 5) + s(X1stFlrSF, df = 5) + s(X2ndFlrSF, df = 5) + s(BedroomAbvGr, df = 5) + s(KitchenAbvGr, df = 5) + s(TotRmsAbvGrd, df = 5) + s(GarageCars, df = 5), data = house_prices_training)
+```
+
+```{r}
+gam_pred <- predict(gam_houses, house_prices_test)
+gam_pred2 <- predict(gam_houses2, house_prices_test)
+gam_pred3 <- predict(gam_houses3, house_prices_test)
+mean((house_prices_test$SalePrice - gam_pred)^2)
+mean((house_prices_test$SalePrice - gam_pred2)^2)
+mean((house_prices_test$SalePrice - gam_pred3)^2)
+```
+
+From the plots above, which uses 4 degrees of freedom, it can be observed that the predictors "LotArea", OverallQual", "OverallCond", "YearBuilt", "X2ndFlrSF", "TotRmsAbvGrd", and "GarageCars" all increase as the "SalePrice" increases. Alternatively, the predictors "BsmtFinSF1", "X1stFirSF", "BedroomAbvGrd", and "KitchenAbvGr" all decrease as the "SalePrice" increases.
+Now analyzing the test errors, we can see that the lowest result is when df = 3. Thus, we will use this value for the final generalized additive model prediction.
+
+### Regression Trees
+
+Now we will create a regression tree to model the training data.
+
+```{r}
+library(tree)
+tree_houses <- tree(SalePrice ~ ., house_prices_training)
+summary(tree_houses)
+```
+
+The above information tells us that the regression tree has a training mean squared error of 1.481e+09 and 12 terminal nodes.
+
+```{r}
+plot(tree_houses)
+text(tree_houses, pretty = 0, cex=0.3)
+```
+
+It can now be observed from the tree plot that the type of house is divided most significantly by their "OverallQual" rating. Houses with an overall quality rating less than 8.5 but greater than 7.5 are worth on average about $67,300 more than their counterparts that have an overall quality rating less than 6.5. I will next use the cv.tree() function to prune the tree and see if this will make a better model.
+
+```{r}
+cv_houses <- cv.tree(tree_houses, K = 10)
+plot(cv_houses$size, cv_houses$dev, type = "b")
+```
+
+```{r}
+best_size <- cv_houses$size[which.min(cv_houses$dev)]
+best_size
+```
+
+By taking the tree size correlating to the lowest cross-validation error, we can set the pruned tree to have the ideal size. 
+
+```{r}
+prune_houses <- prune.tree(tree_houses, best = best_size)
+plot(prune_houses)
+text(prune_houses, pretty = 0, cex=0.3)
+```
+
+The pruning process doesn't make any significant change to the tree plot.
+
+### Bagging
+
+We can now create a bagging model by first calculating the number of predictors to be used in the model.
+
+```{r}
+library(randomForest)
+ncol(house_prices_training) - 1
+```
+
+Now using this value, a bagging model can be made that includes all 23 predictors. The functions importance() and varImpPlot below give some insight into the significance of each predictor on the response in comparison to each other. I chose to use 1000 trees here because it is a reasonably large amount of simple models to train the data.
+
+```{r}
+bag_houses <- randomForest(SalePrice ~ ., data = house_prices_training, ntree = 1000, mtry = 23, importance = TRUE)
+bag_houses
+```
+
+```{r}
+importance(bag_houses)
+```
+
+```{r}
+varImpPlot(bag_houses, cex=0.7)
+```
+
+The predictor "OverallQual" is by far the most significant.
+
+### Random Forest
+
+Now, a similar process can be followed to carry out the random forest model, with the main difference being the number of predictors used will now be the square root of p.
+
+```{r}
+sqrt(ncol(house_prices_training) - 1)
+```
+
+The process is now almost identical to the bagging model above.
+
+```{r}
+rf_houses <- randomForest(SalePrice ~ ., data = house_prices_training, ntree = 1000, mtry = 5, importance = TRUE)
+rf_houses
+```
+
+```{r}
+importance(rf_houses)
+```
+
+```{r}
+varImpPlot(rf_houses, cex=0.7)
+```
+
+The predictor "OverallQual" is still the most important of them, but not by nearly as large of a margin as the bagging model.
+
+### Boosting
+
+For the last model type, boosting, we will fit the model and then use the summary() function to learn relevant importance information for this model.
+
+```{r}
+library(gbm)
+boost_houses <- gbm(SalePrice ~ ., data = house_prices_training, distribution = "gaussian", shrinkage = 0.01, n.tree = 1000, interaction.depth = 4)
+boost_houses
+```
+
+```{r}
+summary(boost_houses)
+```
+
+Similarly to the previous two models, it is again transparent that the predictor "OverallQual" continues to be the most important, here listed as having the most relative influence. As done before, we can now perform 10-fold cross-validation on the original boosting model to determine the best possible number of trees to be used.
+
+```{r}
+boost_cv_houses <- gbm(SalePrice ~ ., data = house_prices_training, distribution = "gaussian", shrinkage = 0.01, n.tree = 1000, interaction.depth = 4, cv.folds = 10)
+which.min(boost_cv_houses$cv.error)
+```
+
+```{r}
+boost_cv_houses
+```
+
+# Cross-Validation Estimates of Test Errors
+
+Now that the creation of all 9 models and their relevant parameter choices/intepretations have been addressed, we can compute the cross-validation estimates of test errors for each model and use these values to make an informed prediction about which model will perform the best, which will be examined after using Kaggle's true test errors. In this section, I will also perform the prediction code for each model.
+
+### KNN
+```{r}
+X_train <- X_all[1:nrow(house_prices_training),]
+X_test <- X_all[-(1:nrow(house_prices_training)),]
+knn_reg <- knn.reg(train = X_train, test = X_test, y = house_prices_training$SalePrice, k = 10)
+knn_pred <- knn_reg$pred
+print(min(error.k))
+```
+
+### Linear Regression
+```{r}
+library(boot)
+lr_pred <- predict(lm_houses_log, house_prices_test)
+lr_pred <- (house_prices_test$SalePrice = exp(lr_pred))
+cv_error <- cv.glm(house_prices_training, lm_houses_log)
+cv_error$delta[1]
+```
+
+### Subset Selection - Best
+```{r}
+bss_pred <- predict.regsubsets(reg_best, newdata = house_prices_test, id = 20)
+min(cv.error.best.fit)
+```
+
+### Ridge Regression
+```{r}
+test_X <- model.matrix(SalePrice ~ ., house_prices_test)
+ridge_pred <- predict(ridge_mod, s = best_lam, newx = test_X)
+length(cv_out$cvm)
+cv_out$cvm[100]
+```
+
+### Lasso
+```{r}
+lasso_pred <- predict(lasso_mod, s = best_lam, newx = test_X)
+length(cv_out_2$cvm)
+cv_out_2$cvm[72]
+```
+
+### GAMs
+```{r}
+gam_pred2 <- predict(gam_houses2, house_prices_test)
+mean((house_prices_test$SalePrice - gam_pred2)^2)
+```
+
+### Regression Trees
+```{r}
+tree_pred <- predict(prune_houses, house_prices_test)
+mean((tree_pred - house_prices_test$SalePrice)^2)
+```
+
+### Bagging
+```{r}
+bag_pred <- predict(bag_houses, newdata = house_prices_test)
+mean((bag_pred - house_prices_test$SalePrice)^2)
+```
+
+### Random Forest
+```{r}
+rf_pred <- predict(rf_houses, newdata = house_prices_test)
+mean((rf_pred - house_prices_test$SalePrice)^2)
+```
+
+### Boosting
+```{r}
+boost_pred <- predict(boost_cv_houses, newdata = house_prices_test, n.trees = which.min(boost_cv_houses$cv.error))
+mean((boost_pred - house_prices_test$SalePrice)^2)
+```
+
+From the cross-validation test errors calculated above for each model, we can predict that the linear regression model will perform the best, and that the regression tree and boosting models will perform the worst.
+
+# True Test Errors
+
+Now, we can submit each of the model prediction results to Kaggle and obtain the true test errors. First, we can use the write.csv() function to create 10 new csv files that contain the predicted sale prices for the houses based on each model.
+
+```{r}
+write.csv(knn_pred, "C:\\Users\\tlt39\\Downloads\\knn_submission.csv")
+write.csv(lr_pred, "C:\\Users\\tlt39\\Downloads\\lr_submission.csv")
+write.csv(bss_pred, "C:\\Users\\tlt39\\Downloads\\bss_submission.csv")
+write.csv(ridge_pred, "C:\\Users\\tlt39\\Downloads\\ridge_submission.csv")
+write.csv(lasso_pred, "C:\\Users\\tlt39\\Downloads\\lasso_submission.csv")
+write.csv(gam_pred, "C:\\Users\\tlt39\\Downloads\\gam_submission.csv")
+write.csv(tree_pred, "C:\\Users\\tlt39\\Downloads\\tree_submission.csv")
+write.csv(bag_pred, "C:\\Users\\tlt39\\Downloads\\bag_submission.csv")
+write.csv(rf_pred, "C:\\Users\\tlt39\\Downloads\\rf_submission.csv")
+write.csv(boost_pred, "C:\\Users\\tlt39\\Downloads\\boost_submission.csv")
+```
+
+### KNN
+
+![](/Users/tlt39/OneDrive/Pictures/Screenshots/2022-12-13.png)
+
+### Linear Regression
+
+![](\Users\tlt39\OneDrive\Pictures\Screenshots\2022-12-13 (1).png)
+
+### Subset Selection - Best
+
+![](\Users\tlt39\OneDrive\Pictures\Screenshots\2022-12-13 (2).png)
+
+### Ridge Regression
+
+![](\Users\tlt39\OneDrive\Pictures\Screenshots\2022-12-13 (3).png)
+
+### Lasso
+
+![](\Users\tlt39\OneDrive\Pictures\Screenshots\2022-12-13 (4).png)
+
+### GAMs
+
+![](\Users\tlt39\OneDrive\Pictures\Screenshots\2022-12-13 (5).png)
+
+### Regression Trees
+
+![](\Users\tlt39\OneDrive\Pictures\Screenshots\2022-12-13 (6).png)
+
+### Bagging
+
+![](\Users\tlt39\OneDrive\Pictures\Screenshots\2022-12-13 (7).png)
+
+### Random Forest
+
+![](\Users\tlt39\OneDrive\Pictures\Screenshots\2022-12-13 (8).png)
+
+### Boosting
+
+![](\Users\tlt39\OneDrive\Pictures\Screenshots\2022-12-13 (9).png)
+
+# Methods Discussion
+
+Based on the Kaggle results, we can see that in actuality that best subset selection, ridge regression and lasso perform the worst, while the generalized additive model and boosting perform the best as both are below 15%. I think that a reason the generalized additive model performed so well is because the best subset selection was implemented into the model by only using the predictors chosen from the selection. Boosting also performed well, and I believe that this is because I chose a number of trees that wasn't large enough to cause any overfitting. A reason that both of the shrinkage methods (ridge regression and lasso) may have performed so badly is because these models include all of the predictors and don't choose a smaller, more efficient subset of them.
+
+# Conclusion
+
+To conclude, these different model types all vary in their setup, code, tuning parameters, etc. However, they all have certain advantages and particular model types where they perform most ideally, so it is important to choose the best model based on correctness/accuracy, and for each individual model to choose tuning parameters that will allow the model to perform as well as it can. For my project, the generalized additive model performed the best with a true test error of 14.401%. So based on my findings, this model would be best for predicting the actual sale prices of these houses in Ames, Iowa that are included in this data.
+Some further questions that could be raised as a result of this study would be how to lower the true test errors collectively for each model, and what specifically could have been chosen better to achieve this. The choices of the tuning parameters within the models is certainly something to look at for finding more accurate results, and what changes through the cross-validation approach could be made to do this.
